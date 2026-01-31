@@ -144,39 +144,38 @@ func (s *SocketService) handleChatMessage(client *Client, msg message.IncomingMe
 	s.SendMessage(client, ackResponse)
 }
 
-// Keep existing simulation for execute plan (backend will handle this later)
+// handleExecutePlan forwards execution request to API Server via NATS
 func (s *SocketService) handleExecutePlan(client *Client, msg message.IncomingMessage) {
-	// TODO: Send to backend via NATS instead of simulation
-	// For now, keep existing simulation
-	steps := []string{"Validating domain...", "Configuring edge locations...", "Deploying configuration..."}
-
-	for i, step := range steps {
-		time.AfterFunc(time.Duration(i+1)*time.Second, func() {
-			progress := message.OutgoingMessage{
-				Type:      message.TypeExecutionProgress,
-				Message:   step,
-				SessionID: msg.SessionID,
-				Timestamp: time.Now(),
-			}
-			s.SendMessage(client, progress)
-		})
+	if msg.PlanID == "" {
+		log.Printf("❌ Execute plan failed: plan_id required")
+		s.SendError(client, "Plan ID is required")
+		return
 	}
 
-	// Send completion
-	time.AfterFunc(4*time.Second, func() {
-		complete := message.OutgoingMessage{
-			Type:      message.TypeExecutionComplete,
-			Success:   true,
-			Message:   "CDN configuration completed successfully!",
-			SessionID: msg.SessionID,
-			Timestamp: time.Now(),
-		}
-		s.SendMessage(client, complete)
-	})
+	log.Printf("🚀 Execute plan request: UserID=%s, PlanID=%s", client.userID, msg.PlanID)
+
+	// Forward to API Server via NATS
+	ctx := context.Background()
+	executeCmd := broker.ExecuteCommand{
+		UserID:    client.userID,
+		SessionID: msg.SessionID,
+		PlanID:    msg.PlanID,
+		Timestamp: time.Now(),
+	}
+
+	if err := s.publisher.PublishExecuteCommand(ctx, executeCmd); err != nil {
+		log.Printf("❌ Failed to publish execute command: %v", err)
+		s.SendError(client, "Failed to start execution. Please try again.")
+		return
+	}
+
+	log.Printf("✅ Execute command sent to API Server: PlanID=%s", msg.PlanID)
+
+	// API Server will send back execution_progress and execution_complete via NATS
 }
 
 // Keep existing simulation for get status
-func (s *SocketService) handleGetStatus(client *Client, msg message.IncomingMessage) {
+func (s *SocketService) handleGetStatusOld(client *Client, msg message.IncomingMessage) {
 	// TODO: Send to backend via NATS instead of simulation
 	status := message.OutgoingMessage{
 		Type: message.TypeStatusUpdate,
@@ -196,6 +195,22 @@ func (s *SocketService) handleGetStatus(client *Client, msg message.IncomingMess
 	}
 
 	s.SendMessage(client, status)
+}
+
+func (s *SocketService) handleGetStatus(client *Client, _ message.IncomingMessage) {
+	log.Printf("📡 Requesting CDN status for UserID=%s", client.userID)
+
+	// Send request to API server via NATS
+	ctx := context.Background()
+	err := s.publisher.PublishStatusRequest(ctx, client.userID, client.sessionID)
+	if err != nil {
+		log.Printf("❌ Failed to request status: %v", err)
+		s.SendError(client, "Failed to fetch CDN status. Please try again.")
+		return
+	}
+
+	// Response will come back via NATS subscriber
+	log.Printf("✅ Status request sent for UserID=%s", client.userID)
 }
 
 func (s *SocketService) SendMessage(client *Client, msg message.OutgoingMessage) {
@@ -234,7 +249,6 @@ func (s *SocketService) SendResponse(event broker.ChatEvent) error {
 		return fmt.Errorf("client not found for UserID=%s", event.UserID)
 	}
 
-	fmt.Println(">>>>>>>>>>>>>> ", event.Message)
 	response := message.OutgoingMessage{
 		Type:      event.Type,
 		Message:   event.Message,
@@ -246,22 +260,39 @@ func (s *SocketService) SendResponse(event broker.ChatEvent) error {
 	return nil
 }
 
-// SendPlan sends an execution plan from backend to user
-func (s *SocketService) SendPlan(userID, sessionID string, plan message.Plan) error {
-	client := s.findClientByUser(userID)
+// SendExecutionPlan sends an execution plan from API Server to the connected user
+func (s *SocketService) SendExecutionPlan(event broker.ExecutionPlanEvent) error {
+	client := s.findClientByUser(event.UserID)
 	if client == nil {
-		log.Errorf("⚠️ Client not found for UserID=%s", userID)
-		return fmt.Errorf("⚠️ Client not found for UserID=%s", userID)
+		log.Printf("⚠️ Client not found for UserID=%s", event.UserID)
+		return fmt.Errorf("client not found for UserID=%s", event.UserID)
+	}
+
+	// Convert broker.ExecutionPlan to message.Plan format for WebSocket
+	planSteps := make([]message.PlanStep, len(event.Plan.Steps))
+	for i, step := range event.Plan.Steps {
+		planSteps[i] = message.PlanStep{
+			Name:   step,
+			Status: "pending",
+		}
+	}
+
+	wsPlan := message.Plan{
+		ID:          event.Plan.ID,
+		Title:       event.Plan.Title,
+		Description: event.Plan.Description,
+		Steps:       planSteps,
 	}
 
 	planMessage := message.OutgoingMessage{
 		Type:      message.TypeExecutionPlan,
-		Plan:      &plan,
-		SessionID: sessionID,
+		Plan:      &wsPlan,
+		SessionID: event.SessionID,
 		Timestamp: time.Now(),
 	}
 
 	s.SendMessage(client, planMessage)
+	log.Printf("✅ Execution plan sent to UserID=%s (Plan: %s)", event.UserID, event.Plan.ID)
 	return nil
 }
 
@@ -355,6 +386,43 @@ func (s *SocketService) SendNotification(userID, notificationType, notificationM
 	}
 
 	s.SendMessage(client, response)
+	return nil
+}
+
+// SendStatusUpdate sends CDN status to a specific user
+func (s *SocketService) SendStatusUpdate(event broker.StatusResponseEvent) error {
+	client := s.findClientByUser(event.UserID)
+	if client == nil {
+		log.Printf("⚠️ Client not found for UserID=%s", event.UserID)
+		return fmt.Errorf("client not found for UserID=%s", event.UserID)
+	}
+
+	// Convert to frontend message format
+	domains := make([]message.Domain, 0, len(event.Services))
+	for _, svc := range event.Services {
+		domains = append(domains, message.Domain{
+			Name:   svc.Name,
+			Status: svc.Status,
+		})
+	}
+
+	status := message.OutgoingMessage{
+		Type: message.TypeStatusUpdate,
+		Status: &message.Status{
+			Provider: "CacheFly",
+			Domains:  domains,
+			Metrics: message.Metrics{
+				CacheHitRatio:   "N/A",
+				AvgResponseTime: "N/A",
+				TotalRequests:   "N/A",
+			},
+		},
+		SessionID: event.SessionID,
+		Timestamp: time.Now(),
+	}
+
+	s.SendMessage(client, status)
+	log.Printf("✅ Status update sent to UserID=%s (%d services)", event.UserID, len(event.Services))
 	return nil
 }
 

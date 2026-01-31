@@ -106,16 +106,13 @@ func setupNATSHandlers(socketService *service.SocketService, msgClient *broker.C
 		log.Printf("❌ Failed to register response handler: %v", err)
 	}
 
-	// Handle execution plans from backend
-	err = subscriber.RegisterPlanHandler(func(event broker.PlanEvent) error {
-		log.Printf("📋 Execution Plan received for user %s: %s", event.UserID, event.Plan.Title)
-
-		// Send execution plan to connected client
-		wsPlan := event.Plan.ToWebSocketPlan()
-		return socketService.SendPlan(event.UserID, event.SessionID, wsPlan)
+	// Handle execution plans from API Server
+	err = subscriber.RegisterExecutionPlanHandler(func(event broker.ExecutionPlanEvent) error {
+		log.Printf("📋 Execution plan received for user %s: %s", event.UserID, event.Plan.ID)
+		return socketService.SendExecutionPlan(event)
 	})
 	if err != nil {
-		log.Printf("❌ Failed to register plan handler: %v", err)
+		log.Printf("❌ Failed to register execution plan handler: %v", err)
 	}
 
 	// Handle operation progress updates from backend
@@ -149,6 +146,17 @@ func setupNATSHandlers(socketService *service.SocketService, msgClient *broker.C
 	})
 	if err != nil {
 		log.Printf("❌ Failed to register notification handler: %v", err)
+	}
+
+	// Handle CDN status responses from backend
+	err = subscriber.RegisterStatusResponseHandler(func(event broker.StatusResponseEvent) error {
+		log.Printf("📡 CDN Status received for user %s: %d services", event.UserID, len(event.Services))
+
+		// Send status update to connected client
+		return socketService.SendStatusUpdate(event)
+	})
+	if err != nil {
+		log.Printf("❌ Failed to register status response handler: %v", err)
 	}
 
 	log.Printf("✅ NATS event handlers configured")

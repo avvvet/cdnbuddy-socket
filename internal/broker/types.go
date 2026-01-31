@@ -51,6 +51,13 @@ type PlanStep struct {
 	Progress    int    `json:"progress,omitempty"` // 0-100
 }
 
+type ExecuteCommand struct {
+	UserID    string    `json:"user_id"`
+	SessionID string    `json:"session_id"`
+	PlanID    string    `json:"plan_id"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // OperationEvent represents operation progress updates
 type OperationEvent struct {
 	UserID      string    `json:"user_id"`
@@ -105,4 +112,49 @@ func (p Plan) ToWebSocketPlan() message.Plan {
 		Title: p.Title,
 		Steps: wsSteps,
 	}
+}
+
+// StatusRequestEvent is sent to API server to request CDN status
+type StatusRequestEvent struct {
+	UserID    string    `json:"user_id"`
+	SessionID string    `json:"session_id"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// StatusResponseEvent is received from API server with CDN status
+type StatusResponseEvent struct {
+	UserID    string          `json:"user_id"`
+	SessionID string          `json:"session_id"`
+	Services  []ServiceStatus `json:"services"`
+	Timestamp time.Time       `json:"timestamp"`
+}
+
+// ServiceStatus represents a CDN service status
+type ServiceStatus struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	TestURL  string `json:"test_url"`
+	Provider string `json:"provider"`
+}
+
+// ExecutionPlanEvent represents an execution plan from API Server
+type ExecutionPlanEvent struct {
+	UserID    string        `json:"user_id"`
+	SessionID string        `json:"session_id"`
+	Plan      ExecutionPlan `json:"plan"`
+	Timestamp time.Time     `json:"timestamp"`
+}
+
+// ExecutionPlan represents a pending execution plan
+type ExecutionPlan struct {
+	ID                string             `json:"id"`
+	Title             string             `json:"title"`
+	Description       string             `json:"description"`
+	Steps             []string           `json:"steps"`
+	EstimatedDuration string             `json:"estimated_duration"`
+	Action            string             `json:"action"`
+	Parameters        map[string]*string `json:"parameters"`
+	CreatedAt         time.Time          `json:"created_at"`
+	ExpiresAt         time.Time          `json:"expires_at"`
 }

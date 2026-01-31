@@ -85,7 +85,6 @@ func (p *Publisher) PublishChatMessage(ctx context.Context, event ChatEvent) err
 	}
 
 	subject := "cdnbuddy.chat"
-	fmt.Println("snetttttttttttttttttttttttttttttttt")
 	return p.conn.Publish(subject, data)
 }
 
@@ -125,6 +124,36 @@ func (p *Publisher) PublishUserDisconnected(ctx context.Context, userID, session
 	return p.conn.Publish(subject, data)
 }
 
+// PublishStatusRequest sends a request to API server for CDN status
+func (p *Publisher) PublishStatusRequest(ctx context.Context, userID, sessionID string) error {
+	event := StatusRequestEvent{
+		UserID:    userID,
+		SessionID: sessionID,
+		Timestamp: time.Now(),
+	}
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal status request: %w", err)
+	}
+
+	subject := "cdn.status.request"
+	return p.conn.Publish(subject, data)
+}
+
+// PublishExecuteCommand sends an execute command to API Server
+func (p *Publisher) PublishExecuteCommand(ctx context.Context, cmd ExecuteCommand) error {
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to marshal execute command: %w", err)
+	}
+
+	subject := "cdnbuddy.execute"
+	fmt.Printf("📤 Publishing execute command to %s (PlanID: %s)\n", subject, cmd.PlanID)
+
+	return p.conn.Publish(subject, data)
+}
+
 // Subscriber handles subscribing to NATS messages
 type Subscriber struct {
 	conn *nats.Conn
@@ -146,22 +175,6 @@ func (s *Subscriber) RegisterResponseHandler(handler func(ChatEvent) error) erro
 
 		if err := handler(event); err != nil {
 			fmt.Printf("Response handler error: %v\n", err)
-		}
-	})
-	return err
-}
-
-// RegisterPlanHandler registers handler for execution plans
-func (s *Subscriber) RegisterPlanHandler(handler func(PlanEvent) error) error {
-	_, err := s.conn.Subscribe("plan.user.*", func(msg *nats.Msg) {
-		var event PlanEvent
-		if err := json.Unmarshal(msg.Data, &event); err != nil {
-			fmt.Printf("Failed to unmarshal plan event: %v\n", err)
-			return
-		}
-
-		if err := handler(event); err != nil {
-			fmt.Printf("Plan handler error: %v\n", err)
 		}
 	})
 	return err
@@ -210,6 +223,42 @@ func (s *Subscriber) RegisterNotificationHandler(handler func(NotificationEvent)
 
 		if err := handler(event); err != nil {
 			fmt.Printf("Notification handler error: %v\n", err)
+		}
+	})
+	return err
+}
+
+// RegisterStatusResponseHandler registers handler for CDN status responses
+func (s *Subscriber) RegisterStatusResponseHandler(handler func(StatusResponseEvent) error) error {
+	fmt.Println("📡 Subscribing to cdn.status.response...")
+	_, err := s.conn.Subscribe("cdnbuddy.status.response", func(msg *nats.Msg) {
+		var event StatusResponseEvent
+		if err := json.Unmarshal(msg.Data, &event); err != nil {
+			fmt.Printf("Failed to unmarshal status response: %v\n", err)
+			return
+		}
+
+		if err := handler(event); err != nil {
+			fmt.Printf("Status response handler error: %v\n", err)
+		}
+	})
+	return err
+}
+
+// RegisterExecutionPlanHandler registers handler for execution plans from API Server
+func (s *Subscriber) RegisterExecutionPlanHandler(handler func(ExecutionPlanEvent) error) error {
+	fmt.Println("📡 Subscribing to cdnbuddy.execution.plan...")
+	_, err := s.conn.Subscribe("cdnbuddy.execution.plan", func(msg *nats.Msg) {
+		var event ExecutionPlanEvent
+		if err := json.Unmarshal(msg.Data, &event); err != nil {
+			fmt.Printf("Failed to unmarshal execution plan: %v\n", err)
+			return
+		}
+
+		fmt.Printf("📥 NATS: Parsed execution plan for user %s: %s\n", event.UserID, event.Plan.ID)
+
+		if err := handler(event); err != nil {
+			fmt.Printf("Execution plan handler error: %v\n", err)
 		}
 	})
 	return err

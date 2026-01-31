@@ -25,9 +25,10 @@ type OutgoingMessage struct {
 
 // Execution Plan structure
 type Plan struct {
-	ID    string     `json:"id"`
-	Title string     `json:"title"`
-	Steps []PlanStep `json:"steps"`
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Steps       []PlanStep `json:"steps"`
 }
 
 type PlanStep struct {
